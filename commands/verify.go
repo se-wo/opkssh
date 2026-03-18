@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 
 	"github.com/openpubkey/openpubkey/pktoken"
@@ -50,14 +49,11 @@ type VerifyCmd struct {
 	// CheckPolicy determines whether the verified PK token is permitted to SSH as a
 	// specific user
 	CheckPolicy PolicyEnforcerFunc
-	// CAEChecker performs login-time Continuous Access Evaluation by querying
-	// the local CAEP/RISC event store. nil means CAE is disabled (no-op).
+	// CAEChecker performs login-time Continuous Access Evaluation. It polls the
+	// configured SSF transmitter and checks the local CAEP/RISC event store.
+	// nil means CAE is disabled (no-op). This mirrors the PolicyEnforcerFunc
+	// injection pattern: wire it up via NewCheckerWithPolling in ReadFromServerConfig.
 	CAEChecker caep.CAECheckerFunc
-	// CAEPoller fetches queued CAEP/RISC events from the SSF transmitter's
-	// polling endpoint before the store is checked. nil means no polling.
-	CAEPoller *caep.Poller
-	// CAEStreams holds per-issuer SSF stream configuration used by CAEPoller.
-	CAEStreams []config.CAEStreamConfig
 	// ConfigPathArg is the path to the server config file
 	ConfigPathArg string
 	// filePermChecker is used to check the file permissions of the config file
@@ -103,10 +99,10 @@ func NewVerifyCmd(pktVerifier verifier.Verifier, checkPolicy PolicyEnforcerFunc,
 //
 // This function:
 // 1. Verifying the PK token with the OP (OpenID Provider)
-// 2. Optionally polling the SSF transmitter for new CAEP/RISC events
-// 3. Checking the local CAE event store for blocking events
-// 4. Enforcing policy by checking if the identity is allowed to assume
-// the username (principal) requested.
+// 2. Optionally evaluating Continuous Access Evaluation (CAE) — polling the
+//    SSF transmitter and checking the local CAEP/RISC event store
+// 3. Enforcing policy by checking if the identity is allowed to assume
+//    the username (principal) requested.
 //
 // If all steps of verification succeed, then the expected authorized_keys file
 // format string is returned (i.e. the expected line to produce on standard
@@ -122,33 +118,11 @@ func (v *VerifyCmd) AuthorizedKeysCommand(ctx context.Context, userArg string, t
 	if pkt, err := cert.VerifySshPktCert(ctx, v.PktVerifier); err != nil { // Verify the PKT contained in the cert
 		return "", err
 	} else {
-		// Poll the SSF transmitter for new CAEP/RISC events before checking the
-		// local store. This ensures we have the latest events at login time
-		// without requiring a background daemon.
-		if v.CAEPoller != nil {
-			issuer, issErr := pkt.Issuer()
-			if issErr == nil {
-				for _, stream := range v.CAEStreams {
-					if stream.Issuer == issuer {
-						if pollErr := v.CAEPoller.Poll(ctx, caep.PollerConfig{
-							Issuer:          stream.Issuer,
-							PollingEndpoint: stream.PollingEndpoint,
-							StreamToken:     stream.StreamToken,
-							Audience:        stream.Audience,
-						}); pollErr != nil {
-							log.Printf("CAE poll error for issuer %q: %v", issuer, pollErr)
-							// FailOpen/FailClosed is enforced in the checker below.
-						}
-						break
-					}
-				}
-			}
-		}
-
-		// CAE login-time evaluation: check the local event store for any
-		// blocking CAEP/RISC events received since the PK token was issued.
+		// CAE login-time evaluation: poll the SSF transmitter for new events and
+		// check the local store for any blocking events received since the PK
+		// token was issued. Both operations are encapsulated in CAEChecker.
 		if v.CAEChecker != nil {
-			if err := v.CAEChecker(pkt); err != nil {
+			if err := v.CAEChecker(ctx, pkt); err != nil {
 				return "", fmt.Errorf("access denied by CAE evaluation: %w", err)
 			}
 		}
@@ -201,16 +175,25 @@ func (v *VerifyCmd) ReadFromServerConfig() error {
 
 	// Wire up CAE if configured and enabled.
 	if serverConfig.CAE != nil && serverConfig.CAE.Enabled {
-		storePath := serverConfig.CAE.EventStorePath
-		store := caep.NewFileStore(storePath)
+		store := caep.NewFileStore(serverConfig.CAE.EventStorePath)
 
-		blockingEvents := serverConfig.CAE.BlockingEvents
-		v.CAEChecker = caep.NewCheckerFunc(store, serverConfig.CAE.FailOpen, blockingEvents)
-
-		if len(serverConfig.CAE.Streams) > 0 {
-			v.CAEPoller = caep.NewPoller(store, v.HttpClient, blockingEvents)
-			v.CAEStreams = serverConfig.CAE.Streams
+		var streams []caep.PollerConfig
+		for _, s := range serverConfig.CAE.Streams {
+			streams = append(streams, caep.PollerConfig{
+				Issuer:          s.Issuer,
+				PollingEndpoint: s.PollingEndpoint,
+				StreamToken:     s.StreamToken,
+				Audience:        s.Audience,
+			})
 		}
+
+		v.CAEChecker = caep.NewCheckerWithPolling(
+			store,
+			v.HttpClient,
+			streams,
+			serverConfig.CAE.FailOpen,
+			serverConfig.CAE.BlockingEvents,
+		)
 	}
 
 	return serverConfig.SetEnvVars()

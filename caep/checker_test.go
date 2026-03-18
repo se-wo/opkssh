@@ -17,6 +17,7 @@
 package caep
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestNewCheckerFunc_NoEvents_AllowsLogin(t *testing.T) {
 	checker := NewCheckerFunc(store, false, nil)
 
 	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-1*time.Hour).Unix())
-	require.NoError(t, checker(pkt))
+	require.NoError(t, checker(context.Background(), pkt))
 }
 
 func TestNewCheckerFunc_BlockingEvent_DeniesLogin(t *testing.T) {
@@ -73,7 +74,7 @@ func TestNewCheckerFunc_BlockingEvent_DeniesLogin(t *testing.T) {
 	checker := NewCheckerFunc(store, false, nil)
 	pkt := makePKToken(t, testIssuer, testSubject, tokenIat.Unix())
 
-	err := checker(pkt)
+	err := checker(context.Background(), pkt)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "CAE: login denied")
 	require.ErrorContains(t, err, EventSessionRevoked)
@@ -95,7 +96,7 @@ func TestNewCheckerFunc_EventBeforeIat_AllowsLogin(t *testing.T) {
 	checker := NewCheckerFunc(store, false, nil)
 	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-5*time.Minute).Unix())
 
-	require.NoError(t, checker(pkt))
+	require.NoError(t, checker(context.Background(), pkt))
 }
 
 func TestNewCheckerFunc_StoreUnavailable_FailClosed(t *testing.T) {
@@ -116,7 +117,7 @@ func TestNewCheckerFunc_StoreUnavailable_FailClosed(t *testing.T) {
 	// Here we verify the fail-open=false path does NOT block when store is clean.
 	checker := NewCheckerFunc(store, false, nil)
 	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-1*time.Hour).Unix())
-	require.NoError(t, checker(pkt))
+	require.NoError(t, checker(context.Background(), pkt))
 }
 
 func TestNewCheckerFunc_FailOpen_AllowsOnStoreError(t *testing.T) {
@@ -135,12 +136,12 @@ func TestNewCheckerFunc_FailOpen_AllowsOnStoreError(t *testing.T) {
 	// With fail_open=false the checker should deny login.
 	checker := NewCheckerFunc(store, false, nil)
 	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-1*time.Hour).Unix())
-	require.Error(t, checker(pkt))
+	require.Error(t, checker(context.Background(), pkt))
 
 	// With fail_open=true and a different store (no events) → allow.
 	emptyStore := &FileStore{Fs: afero.NewMemMapFs(), Path: "/test/caep-empty"}
 	checkerOpen := NewCheckerFunc(emptyStore, true, nil)
-	require.NoError(t, checkerOpen(pkt))
+	require.NoError(t, checkerOpen(context.Background(), pkt))
 }
 
 func TestNewCheckerFunc_MissingIssClaim_ReturnsError(t *testing.T) {
@@ -153,7 +154,7 @@ func TestNewCheckerFunc_MissingIssClaim_ReturnsError(t *testing.T) {
 	pkt := &pktoken.PKToken{}
 	pkt.Payload = payload
 
-	err := checker(pkt)
+	err := checker(context.Background(), pkt)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "iss or sub")
 }

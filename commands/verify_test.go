@@ -122,14 +122,14 @@ func TestAuthorizedKeysCommand(t *testing.T) {
 			// CAE checker returns an error → login must be denied regardless of policy.
 			name:        "CAE blocks login",
 			policyFunc:  AllowAllPolicyEnforcer,
-			caeChecker:  func(pkt *pktoken.PKToken) error { return fmt.Errorf("session revoked") },
+			caeChecker:  func(_ context.Context, pkt *pktoken.PKToken) error { return fmt.Errorf("session revoked") },
 			errorString: "access denied by CAE evaluation",
 		},
 		{
 			// CAE checker returns nil → login proceeds normally.
 			name:       "CAE allows login",
 			policyFunc: AllowAllPolicyEnforcer,
-			caeChecker: func(pkt *pktoken.PKToken) error { return nil },
+			caeChecker: func(_ context.Context, pkt *pktoken.PKToken) error { return nil },
 		},
 		{
 			// nil CAEChecker means CAE is disabled — existing behaviour unchanged.

@@ -140,7 +140,7 @@ func (p *Poller) Poll(ctx context.Context, cfg PollerConfig) error {
 
 	var toAck []string
 	for jti, rawJWT := range pollResp.Sets {
-		set, err := ParseAndVerify(ctx, rawJWT, cfg.Audience, p.HttpClient)
+		set, err := ParseAndVerify(ctx, rawJWT, cfg.Issuer, cfg.Audience, p.HttpClient)
 		if err != nil {
 			// Log and skip malformed SETs; don't fail the whole poll.
 			log.Printf("CAE: skipping malformed SET (jti=%s): %v", jti, err)

@@ -63,30 +63,32 @@ type rawSETClaims struct {
 	TOE       int64                      `json:"toe"`
 }
 
-// ParseAndVerify parses a raw SET JWT string, verifies its signature using the
-// issuer's public keys (fetched from the issuer's OIDC JWKS URI), validates
-// the audience against expectedAudience, and returns the decoded SET.
+// ParseAndVerify parses a raw SET JWT string, verifies its signature using
+// the issuer's public keys (fetched from OIDC discovery), validates the iss
+// and aud claims, and returns the decoded SET.
 //
-// httpClient may be nil; the default http.Client is used in that case.
-func ParseAndVerify(ctx context.Context, rawJWT string, expectedAudience string, httpClient *http.Client) (*SET, error) {
+// expectedIssuer must be non-empty. It is used directly as the OIDC discovery
+// base URL rather than trusting the iss claim from the unverified token. This
+// prevents SSRF attacks where a compromised polling endpoint returns SETs with
+// attacker-controlled iss values, and eliminates a redundant OIDC discovery
+// call since the issuer was already established during PK token verification.
+//
+// httpClient may be nil; http.DefaultClient is used in that case.
+func ParseAndVerify(ctx context.Context, rawJWT string, expectedIssuer, expectedAudience string, httpClient *http.Client) (*SET, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-
-	// Parse without verification first to extract the issuer for JWKS lookup.
-	unverified, err := jwt.ParseInsecure([]byte(rawJWT))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SET JWT: %w", err)
-	}
-	issuer := unverified.Issuer()
-	if issuer == "" {
-		return nil, fmt.Errorf("SET is missing issuer claim")
+	if expectedIssuer == "" {
+		return nil, fmt.Errorf("expectedIssuer must not be empty")
 	}
 
-	// Fetch JWKS for this issuer via OIDC discovery.
-	jwksURI, err := fetchJWKSURI(ctx, issuer, httpClient)
+	// Use the admin-configured expectedIssuer directly for JWKS discovery.
+	// We do NOT pre-parse the token to extract the iss claim; trusting an
+	// unverified claim from a potentially compromised endpoint would allow
+	// an attacker to redirect the OIDC discovery request to an arbitrary host.
+	jwksURI, err := fetchJWKSURI(ctx, expectedIssuer, httpClient)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover JWKS URI for issuer %q: %w", issuer, err)
+		return nil, fmt.Errorf("failed to discover JWKS URI for issuer %q: %w", expectedIssuer, err)
 	}
 
 	keySet, err := jwk.Fetch(ctx, jwksURI, jwk.WithHTTPClient(httpClient))
@@ -94,10 +96,11 @@ func ParseAndVerify(ctx context.Context, rawJWT string, expectedAudience string,
 		return nil, fmt.Errorf("failed to fetch JWKS from %q: %w", jwksURI, err)
 	}
 
-	// Verify the JWT signature and standard claims.
+	// Verify the JWT signature and validate standard claims including iss.
 	parseOpts := []jwt.ParseOption{
 		jwt.WithKeySet(keySet),
 		jwt.WithValidate(true),
+		jwt.WithIssuer(expectedIssuer), // reject SETs not from the configured issuer
 	}
 	if expectedAudience != "" {
 		parseOpts = append(parseOpts, jwt.WithAudience(expectedAudience))
