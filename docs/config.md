@@ -206,8 +206,80 @@ chown {USER}:{USER} /home/{USER}/.opk/auth_id
 chmod 600 /home/{USER}/.opk/auth_id
 ```
 
+## Continuous Access Evaluation: `cae` block in `/etc/opk/config.yml`
+
+The optional `cae` block enables Continuous Access Evaluation (CAE) at SSH
+login time. When enabled, `opkssh verify` polls the OIDC provider's SSF
+endpoint for CAEP/RISC security events (session revoked, account disabled,
+etc.) and denies login if a blocking event was received after the user's PK
+token was issued.
+
+CAE is **disabled by default**. Add the block below to `/etc/opk/config.yml`
+to opt in:
+
+```yaml
+cae:
+  enabled: true
+  streams:
+    - issuer: https://your-provider.example.com
+      polling_endpoint: https://your-provider.example.com/ssf/events
+      stream_token: <bearer-token-from-stream-registration>
+      audience: https://your-ssh-server.example.com
+```
+
+Full reference:
+
+```yaml
+cae:
+  # Set to true to enable CAE evaluation at each SSH login.
+  enabled: true
+
+  # fail_open controls what happens when the SSF polling endpoint or local
+  # event store is unavailable:
+  #   false (default): deny login and log the error  (secure default)
+  #   true:            log a warning and allow login  (availability-first)
+  fail_open: false
+
+  # event_store_path is the directory where received events are persisted
+  # between logins. Must be readable and writable by opksshuser.
+  # Default: /var/lib/opk/caep-events
+  event_store_path: /var/lib/opk/caep-events
+
+  # blocking_events lists the CAEP/RISC event type URIs that block login.
+  # If omitted, the five default types below are used.
+  blocking_events:
+    - https://schemas.openid.net/secevent/caep/event-type/session-revoked
+    - https://schemas.openid.net/secevent/risc/event-type/account-disabled
+    - https://schemas.openid.net/secevent/risc/event-type/account-purged
+    - https://schemas.openid.net/secevent/risc/event-type/account-compromised
+    - https://schemas.openid.net/secevent/risc/event-type/credential-compromise
+
+  # streams is a list of SSF stream configurations, one per OIDC provider.
+  # Each stream must be registered with the provider before being listed here.
+  streams:
+    - issuer: https://your-provider.example.com
+      polling_endpoint: https://your-provider.example.com/ssf/events
+      stream_token: <bearer-token-from-stream-registration>
+      audience: https://your-ssh-server.example.com
+```
+
+The `stream_token` is a bearer token obtained when you register an SSF polling
+stream with your provider. The `issuer` must exactly match the `iss` claim in
+users' PK tokens.
+
+After adding the `cae` block, create the event store directory:
+
+```bash
+sudo mkdir -p /var/lib/opk/caep-events
+sudo chown opksshuser:opksshuser /var/lib/opk/caep-events
+sudo chmod 750 /var/lib/opk/caep-events
+```
+
+See [Continuous Access Evaluation](cae.md) for the full setup guide including
+per-provider instructions.
+
 ## See Also
 
-Our documentation on the [audit command](audit.md) for troubleshooting server side configurations. 
+Our documentation on the [audit command](audit.md) for troubleshooting server side configurations.
 
 Our documentation on the changes our install script makes to a server: [installing.md](../scripts/installing.md)

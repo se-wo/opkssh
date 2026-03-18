@@ -108,6 +108,93 @@ For more information see: [opkssh configuration files](https://github.com/openpu
 Then run `opkssh login` or `opkssh login azure` on the client.
 This should run without error.
 
+## Continuous Access Evaluation (CAE) with Azure Entra ID
+
+Azure Entra ID implements CAE through the **CP1 client capability**. Apps that
+declare CP1 support receive long-lived tokens (up to 28 hours) that Entra can
+revoke early, and will receive CAEP security events via the SSF transmitter
+once it is generally available.
+
+### 1. Declare the CP1 capability in the App Registration
+
+In the [Azure portal](https://portal.azure.com/):
+
+1. Open **Entra ID** → **App registrations** → your opkssh app.
+2. Click **Manifest** in the left menu.
+3. Locate the `optionalClaims` section and add the `xms_cc` optional claim to
+   **access tokens**:
+
+```json
+"optionalClaims": {
+    "accessToken": [
+        {
+            "name": "xms_cc",
+            "additionalProperties": ["cp1"]
+        }
+    ],
+    "idToken": [],
+    "saml2Token": []
+}
+```
+
+4. Click **Save**.
+
+Alternatively: navigate to **Token configuration** → **Add optional claim**
+→ select **Access token** → choose `xms_cc`, then add `cp1` as an additional
+property.
+
+> [!NOTE]
+> The `xms_cc` claim with value `cp1` tells Entra this is a CAE-enabled
+> application. Without it, Entra will not issue long-lived CAE tokens and will
+> not send early-revocation signals to this app.
+
+### 2. Enable the access token in the SSH certificate
+
+On each client, edit `~/.opk/config.yml` and add `send_access_token: true` to
+the Azure provider entry:
+
+```yaml
+providers:
+  - alias: azure microsoft
+    issuer: https://login.microsoftonline.com/{TENANT_ID}/v2.0
+    client_id: {CLIENT_ID}
+    scopes: openid profile email offline_access
+    access_type: offline
+    prompt: consent
+    redirect_uris:
+      - http://localhost:3000/login-callback
+      - http://localhost:10001/login-callback
+      - http://localhost:11110/login-callback
+    send_access_token: true
+```
+
+This embeds the access token in the SSH certificate so the server can call the
+userinfo endpoint for additional claims. It also prepares the integration for
+the SSF stream authentication step once Azure's SSF transmitter is generally
+available.
+
+### 3. Configure the SSF stream (once Azure SSF transmitter is available)
+
+> [!IMPORTANT]
+> Azure's SSF transmitter for external receivers is in preview as of 2025.
+> Check [Microsoft's CAE documentation](https://learn.microsoft.com/en-us/entra/identity-platform/app-resilience-continuous-access-evaluation)
+> for the current endpoint and registration procedure.
+
+Once Microsoft publishes the Azure SSF polling endpoint, register a stream and
+add it to `/etc/opk/config.yml`:
+
+```yaml
+cae:
+  enabled: true
+  streams:
+    - issuer: https://login.microsoftonline.com/{TENANT_ID}/v2.0
+      polling_endpoint: <azure-ssf-polling-endpoint>
+      stream_token: <bearer-token>
+      audience: https://your-ssh-server.example.com
+```
+
+See the [CAE guide](../cae.md) for the complete server-side setup.
+
 ## Troubleshooting (Common Issues)
 
 ### Error message: The request body must contain the following parameter: 'client_assertion' or 'client_secret'
