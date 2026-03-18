@@ -19,6 +19,7 @@ package caep
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -157,4 +158,76 @@ func TestNewCheckerFunc_MissingIssClaim_ReturnsError(t *testing.T) {
 	err := checker(context.Background(), pkt)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "iss or sub")
+}
+
+// --- NewCheckerWithPolling tests ---
+
+func TestNewCheckerWithPolling_NoStreams_SkipsPolling(t *testing.T) {
+	t.Parallel()
+
+	store := &FileStore{Fs: afero.NewMemMapFs(), Path: "/test/caep"}
+	// No streams → polling is disabled. No blocking events → allow.
+	checker := NewCheckerWithPolling(store, nil, nil, false, nil)
+
+	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-1*time.Hour).Unix())
+	require.NoError(t, checker(context.Background(), pkt))
+}
+
+func TestNewCheckerWithPolling_NoMatchingStream_SkipsPolling(t *testing.T) {
+	t.Parallel()
+
+	store := &FileStore{Fs: afero.NewMemMapFs(), Path: "/test/caep"}
+	streams := []PollerConfig{
+		{Issuer: "https://other.example.com", PollingEndpoint: "http://unreachable.invalid/poll"},
+	}
+	// The token's issuer doesn't match any stream — polling is skipped.
+	checker := NewCheckerWithPolling(store, nil, streams, false, nil)
+
+	pkt := makePKToken(t, testIssuer, testSubject, time.Now().Add(-1*time.Hour).Unix())
+	require.NoError(t, checker(context.Background(), pkt))
+}
+
+func TestNewCheckerWithPolling_PollError_FallsBackToStore_AllowsLogin(t *testing.T) {
+	t.Parallel()
+	ss := newSETServer(t)
+
+	// /poll always returns 500.
+	ss.setPollHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	store := &FileStore{Fs: afero.NewMemMapFs(), Path: "/test/caep"}
+	streams := []PollerConfig{
+		{Issuer: ss.URL, PollingEndpoint: ss.URL + "/poll", StreamToken: "tok"},
+	}
+	checker := NewCheckerWithPolling(store, ss.Client(), streams, false, nil)
+
+	// Poll fails but store is empty → login allowed (poll errors are non-fatal).
+	pkt := makePKToken(t, ss.URL, testSubject, time.Now().Add(-1*time.Hour).Unix())
+	require.NoError(t, checker(context.Background(), pkt))
+}
+
+func TestNewCheckerWithPolling_PollStoresEvent_BlocksLogin(t *testing.T) {
+	t.Parallel()
+	ss := newSETServer(t)
+
+	events := map[string]interface{}{EventSessionRevoked: map[string]interface{}{}}
+	rawJWT := ss.signSET(t, testSubject, "", events)
+
+	ss.setPollHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(pollResponseJSON(t, map[string]string{"jti-1": rawJWT}, false)) //nolint:errcheck
+	})
+
+	store := &FileStore{Fs: afero.NewMemMapFs(), Path: "/test/caep"}
+	streams := []PollerConfig{
+		{Issuer: ss.URL, PollingEndpoint: ss.URL + "/poll", StreamToken: "tok"},
+	}
+	checker := NewCheckerWithPolling(store, ss.Client(), streams, false, nil)
+
+	// Token issued 1 hour ago; polling deposits a session-revoked event now.
+	pkt := makePKToken(t, ss.URL, testSubject, time.Now().Add(-1*time.Hour).Unix())
+	err := checker(context.Background(), pkt)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "CAE: login denied")
 }

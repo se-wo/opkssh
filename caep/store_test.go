@@ -183,3 +183,47 @@ func TestWriteAndRead_CustomBlockingList(t *testing.T) {
 	require.True(t, blocked)
 	require.NotNil(t, event)
 }
+
+func TestNewFileStore_DefaultPath(t *testing.T) {
+	t.Parallel()
+	store := NewFileStore("")
+	require.Equal(t, DefaultStorePath, store.Path)
+	require.NotNil(t, store.Fs)
+}
+
+func TestNewFileStore_CustomPath(t *testing.T) {
+	t.Parallel()
+	store := NewFileStore("/custom/path")
+	require.Equal(t, "/custom/path", store.Path)
+}
+
+func TestWriteEvent_MkdirAllError(t *testing.T) {
+	t.Parallel()
+	// A read-only FS will cause MkdirAll to fail.
+	fs := afero.NewReadOnlyFs(afero.NewMemMapFs())
+	store := &FileStore{Fs: fs, Path: "/test/caep"}
+
+	err := store.WriteEvent(StoredEvent{
+		Issuer:     testIssuer,
+		Subject:    testSubject,
+		EventType:  EventSessionRevoked,
+		ReceivedAt: time.Now(),
+	})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to create event store directory")
+}
+
+func TestReadEvents_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	memFs := afero.NewMemMapFs()
+	store := &FileStore{Fs: memFs, Path: "/test/caep"}
+
+	// Create the directory and write invalid JSON directly.
+	require.NoError(t, memFs.MkdirAll("/test/caep", 0750))
+	filePath := "/test/caep/" + userKey(testIssuer, testSubject)
+	require.NoError(t, afero.WriteFile(memFs, filePath, []byte("not valid json"), 0640))
+
+	_, _, err := store.HasBlockingEvent(testIssuer, testSubject, time.Now().Add(-1*time.Hour), DefaultBlockingEvents)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to parse events file")
+}
