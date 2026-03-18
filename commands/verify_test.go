@@ -33,6 +33,7 @@ import (
 	"github.com/openpubkey/openpubkey/providers/mocks"
 	"github.com/openpubkey/openpubkey/util"
 	"github.com/openpubkey/openpubkey/verifier"
+	"github.com/openpubkey/opkssh/caep"
 	"github.com/openpubkey/opkssh/policy"
 	"github.com/openpubkey/opkssh/policy/files"
 	"github.com/openpubkey/opkssh/sshcert"
@@ -90,6 +91,7 @@ func TestAuthorizedKeysCommand(t *testing.T) {
 		accessToken string
 		errorString string
 		policyFunc  func(userDesired string, pkt *pktoken.PKToken, userInfo string, certB64 string, typArg string, denyList policy.DenyList, extraArgs []string) error
+		caeChecker  caep.CAECheckerFunc
 	}{
 		{
 			name:       "Happy Path",
@@ -115,6 +117,25 @@ func TestAuthorizedKeysCommand(t *testing.T) {
 
 				return fmt.Errorf("extraArgs doesn't match (expected %v, got %v)", mockExtraArgs, extraArgs)
 			},
+		},
+		{
+			// CAE checker returns an error → login must be denied regardless of policy.
+			name:        "CAE blocks login",
+			policyFunc:  AllowAllPolicyEnforcer,
+			caeChecker:  func(pkt *pktoken.PKToken) error { return fmt.Errorf("session revoked") },
+			errorString: "access denied by CAE evaluation",
+		},
+		{
+			// CAE checker returns nil → login proceeds normally.
+			name:       "CAE allows login",
+			policyFunc: AllowAllPolicyEnforcer,
+			caeChecker: func(pkt *pktoken.PKToken) error { return nil },
+		},
+		{
+			// nil CAEChecker means CAE is disabled — existing behaviour unchanged.
+			name:       "CAE disabled (nil checker)",
+			policyFunc: AllowAllPolicyEnforcer,
+			caeChecker: nil,
 		},
 	}
 	for _, tt := range tests {
@@ -160,6 +181,7 @@ func TestAuthorizedKeysCommand(t *testing.T) {
 			ver := VerifyCmd{
 				PktVerifier: *verPkt,
 				CheckPolicy: tt.policyFunc,
+				CAEChecker:  tt.caeChecker,
 				HttpClient:  mocks.NewMockGoogleUserInfoHTTPClient(userInfoResponse, expectedAccessToken),
 			}
 
