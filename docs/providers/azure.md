@@ -148,10 +148,17 @@ property.
 > application. Without it, Entra will not issue long-lived CAE tokens and will
 > not send early-revocation signals to this app.
 
-### 2. Enable the access token in the SSH certificate
+### 2. (Optional) Embed the access token for userinfo claims
 
-On each client, edit `~/.opk/config.yml` and add `send_access_token: true` to
-the Azure provider entry:
+> [!NOTE]
+> This step is independent of CAE and is not required for SSF polling to work.
+> The SSF stream is authenticated with the static `stream_token` admin
+> credential in `/etc/opk/config.yml`, not with the per-user access token.
+
+If your policy enforcement relies on claims that Entra ID only exposes through
+the userinfo endpoint (e.g. additional group claims not present in the ID
+token), enable `send_access_token: true` for the Azure provider in
+`~/.opk/config.yml`:
 
 ```yaml
 providers:
@@ -168,10 +175,10 @@ providers:
     send_access_token: true
 ```
 
-This embeds the access token in the SSH certificate so the server can call the
-userinfo endpoint for additional claims. It also prepares the integration for
-the SSF stream authentication step once Azure's SSF transmitter is generally
-available.
+This embeds the user's Entra access token in the SSH certificate so the server
+can call the userinfo endpoint for additional claims at login time. See
+[`send_access_token`](../config.md#client-config-opkconfigyml) in the client
+config reference for the security implications before enabling this.
 
 ### 3. Configure the SSF stream (once Azure SSF transmitter is available)
 

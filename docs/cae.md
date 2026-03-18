@@ -151,17 +151,23 @@ Okta supports the full SSF specification including polling delivery (RFC 8936).
 
 #### 1. Register an SSF stream
 
-Use the Okta SSF API to register a polling stream. You need an Okta API
-token with `okta.eventHooks.manage` scope.
+Use the Okta SSF Stream Management API to register a polling stream.
+Authenticate with an Okta API token that has the required SSF stream
+management scope (see
+[Okta SSF configuration guide](https://developer.okta.com/docs/guides/configure-ssf-receiver/main/)
+for the current scope name and authentication method).
+
+For polling delivery (`urn:ietf:rfc:8936`), do **not** include an
+`endpoint_url` in the request — that field is used for push delivery only.
+The transmitter returns the polling endpoint URL in its response.
 
 ```bash
 curl -X POST https://your-org.okta.com/api/v1/ssf/stream \
-  -H "Authorization: SSWS <okta-api-token>" \
+  -H "Authorization: Bearer <okta-api-token>" \
   -H "Content-Type: application/json" \
   -d '{
     "delivery": {
-      "method": "urn:ietf:rfc:8936",
-      "endpoint_url": "https://your-ssh-server.example.com/ssf-unused"
+      "method": "urn:ietf:rfc:8936"
     },
     "events_requested": [
       "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
@@ -173,12 +179,9 @@ curl -X POST https://your-org.okta.com/api/v1/ssf/stream \
 
 The response includes:
 - `stream_id` — record this for reference
-- `delivery.endpoint_url` — the polling endpoint URL
-- A stream bearer token in the response headers or a separate registration step
-
-Consult the
-[Okta SSF configuration guide](https://developer.okta.com/docs/guides/configure-ssf-receiver/main/)
-for the full registration flow and how to obtain the stream bearer token.
+- `delivery.endpoint_url` — the polling endpoint URL opkssh will call
+- A stream bearer token (obtain via Okta's stream token endpoint or from the
+  registration response; consult the Okta SSF guide above for exact steps)
 
 #### 2. Add the stream to `/etc/opk/config.yml`
 
@@ -195,16 +198,11 @@ cae:
 #### 3. Verify
 
 Trigger a session revocation in Okta for a test user.
-On their next SSH login attempt, opkssh should log:
+On their next SSH login attempt, `/var/log/opkssh.log` should contain:
 
 ```
-CAE: stored event type="https://schemas.openid.net/secevent/caep/event-type/session-revoked" ...
-```
-
-and deny the login with:
-
-```
-access denied by CAE evaluation: CAE: login denied due to security event ...
+CAE: stored event type="https://schemas.openid.net/secevent/caep/event-type/session-revoked" iss="https://your-org.okta.com" sub="<user-subject>"
+failed to verify: access denied by CAE evaluation: CAE: login denied due to security event "https://schemas.openid.net/secevent/caep/event-type/session-revoked" received at <RFC3339-timestamp>
 ```
 
 ---
@@ -263,11 +261,16 @@ property.
 > Entra this is a CAE-enabled application. Entra will only issue long-lived
 > CAE tokens to apps that carry this claim.
 
-#### 2. Enable the access token in the SSH certificate
+#### 2. (Optional) Embed the access token for userinfo claims
 
-On each client that authenticates with Azure, ensure the access token is
-embedded in the SSH certificate. Edit `~/.opk/config.yml` and set
-`send_access_token: true` for the Azure provider:
+> [!NOTE]
+> This step is independent of CAE and SSF polling. The SSF stream is
+> authenticated with the static `stream_token` admin credential configured in
+> `/etc/opk/config.yml`, not with the per-user access token.
+
+If your policy depends on claims that Entra ID only exposes through the
+userinfo endpoint, set `send_access_token: true` for the Azure provider in
+`~/.opk/config.yml`:
 
 ```yaml
 providers:
@@ -284,9 +287,8 @@ providers:
     send_access_token: true
 ```
 
-This embeds the access token in the SSH certificate so the server can call
-the userinfo endpoint — and, once Azure's SSF transmitter is available, so
-the server can use the token to authenticate stream registration.
+See [Relationship to `send_access_token`](#relationship-to-send_access_token)
+below for details.
 
 #### 3. Configure the SSF stream (once Azure SSF transmitter is available)
 
@@ -353,8 +355,11 @@ alongside CAE but is not a prerequisite.
 Check the opkssh log at `/var/log/opkssh.log`:
 
 ```
-CAE: stored event type="..." iss="..." sub="..."
-CAE: login denied due to security event "..." received at ...
+# Written by the poller when an event is received (one line per event type):
+CAE: stored event type="<event-type-uri>" iss="<issuer>" sub="<subject>"
+
+# Written at login denial:
+failed to verify: access denied by CAE evaluation: CAE: login denied due to security event "<event-type-uri>" received at <RFC3339-timestamp>
 ```
 
 If the event was stored from a previous session that has since been
