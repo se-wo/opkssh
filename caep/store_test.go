@@ -32,8 +32,9 @@ const (
 func newTestStore(t *testing.T) *FileStore {
 	t.Helper()
 	return &FileStore{
-		Fs:   afero.NewMemMapFs(),
-		Path: "/test/caep-events",
+		Fs:       afero.NewMemMapFs(),
+		Path:     "/test/caep-events",
+		EventTTL: DefaultEventTTL,
 	}
 }
 
@@ -186,15 +187,17 @@ func TestWriteAndRead_CustomBlockingList(t *testing.T) {
 
 func TestNewFileStore_DefaultPath(t *testing.T) {
 	t.Parallel()
-	store := NewFileStore("")
+	store := NewFileStore("", 0)
 	require.Equal(t, DefaultStorePath, store.Path)
+	require.Equal(t, DefaultEventTTL, store.EventTTL)
 	require.NotNil(t, store.Fs)
 }
 
 func TestNewFileStore_CustomPath(t *testing.T) {
 	t.Parallel()
-	store := NewFileStore("/custom/path")
+	store := NewFileStore("/custom/path", 7*24*time.Hour)
 	require.Equal(t, "/custom/path", store.Path)
+	require.Equal(t, 7*24*time.Hour, store.EventTTL)
 }
 
 func TestWriteEvent_MkdirAllError(t *testing.T) {
@@ -216,7 +219,7 @@ func TestWriteEvent_MkdirAllError(t *testing.T) {
 func TestReadEvents_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	memFs := afero.NewMemMapFs()
-	store := &FileStore{Fs: memFs, Path: "/test/caep"}
+	store := &FileStore{Fs: memFs, Path: "/test/caep", EventTTL: DefaultEventTTL}
 
 	// Create the directory and write invalid JSON directly.
 	require.NoError(t, memFs.MkdirAll("/test/caep", 0750))
@@ -226,4 +229,37 @@ func TestReadEvents_InvalidJSON(t *testing.T) {
 	_, _, err := store.HasBlockingEvent(testIssuer, testSubject, time.Now().Add(-1*time.Hour), DefaultBlockingEvents)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "failed to parse events file")
+}
+
+func TestWriteEvent_PrunesExpiredEvents(t *testing.T) {
+	t.Parallel()
+	store := &FileStore{
+		Fs:       afero.NewMemMapFs(),
+		Path:     "/test/caep",
+		EventTTL: 7 * 24 * time.Hour,
+	}
+
+	tokenIat := time.Now().Add(-1 * time.Hour)
+
+	// Write an old event that is beyond the TTL.
+	require.NoError(t, store.WriteEvent(StoredEvent{
+		Issuer:     testIssuer,
+		Subject:    testSubject,
+		EventType:  EventSessionRevoked,
+		ReceivedAt: time.Now().Add(-8 * 24 * time.Hour), // 8 days ago, TTL is 7
+	}))
+
+	// Write a fresh event to trigger pruning of the old one.
+	require.NoError(t, store.WriteEvent(StoredEvent{
+		Issuer:     testIssuer,
+		Subject:    testSubject,
+		EventType:  EventAccountEnabled, // non-blocking
+		ReceivedAt: time.Now(),
+	}))
+
+	// The expired session-revoked event must have been pruned; only the fresh
+	// non-blocking event remains, so login must not be blocked.
+	blocked, _, err := store.HasBlockingEvent(testIssuer, testSubject, tokenIat, DefaultBlockingEvents)
+	require.NoError(t, err)
+	require.False(t, blocked)
 }

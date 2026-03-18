@@ -59,6 +59,11 @@ type CAEConfig struct {
 	// Must be readable and writable by opksshuser (the AuthorizedKeysCommandUser).
 	EventStorePath string `yaml:"event_store_path"`
 
+	// EventTTLDays is how many days a stored CAEP/RISC event is retained before
+	// being pruned. Events older than this cannot block any valid token anyway,
+	// since tokens expire before the TTL elapses. 0 means the default (30 days).
+	EventTTLDays int `yaml:"event_ttl_days"`
+
 	// BlockingEvents is the list of CAEP/RISC event type URIs that trigger a
 	// login denial. If empty, caep.DefaultBlockingEvents is used.
 	BlockingEvents []string `yaml:"blocking_events"`

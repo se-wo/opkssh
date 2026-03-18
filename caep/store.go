@@ -35,6 +35,11 @@ import (
 // polling) and reads (during CAE evaluation) this store.
 const DefaultStorePath = "/var/lib/opk/caep-events"
 
+// DefaultEventTTL is the default time after which stored events are pruned.
+// 30 days covers the maximum token validity of major providers (e.g. Entra ID
+// issues tokens valid for up to 28 days).
+const DefaultEventTTL = 30 * 24 * time.Hour
+
 // FileStore persists CAEP/RISC events to disk. Events are stored as JSON
 // files keyed by a hash of the user's (issuer, subject) pair so that login-
 // time lookups are O(1) file reads.
@@ -42,18 +47,24 @@ const DefaultStorePath = "/var/lib/opk/caep-events"
 // Directory permissions: 0750 owned by opksshuser.
 // File permissions: 0640 owned by opksshuser.
 type FileStore struct {
-	Fs   afero.Fs
-	Path string
+	Fs       afero.Fs
+	Path     string
+	EventTTL time.Duration
 }
 
 // NewFileStore returns a FileStore rooted at path (default: DefaultStorePath).
-func NewFileStore(path string) *FileStore {
+// eventTTL controls how long events are retained; use 0 for DefaultEventTTL.
+func NewFileStore(path string, eventTTL time.Duration) *FileStore {
 	if path == "" {
 		path = DefaultStorePath
 	}
+	if eventTTL <= 0 {
+		eventTTL = DefaultEventTTL
+	}
 	return &FileStore{
-		Fs:   afero.NewOsFs(),
-		Path: path,
+		Fs:       afero.NewOsFs(),
+		Path:     path,
+		EventTTL: eventTTL,
 	}
 }
 
@@ -80,7 +91,15 @@ func (s *FileStore) WriteEvent(event StoredEvent) error {
 		return err
 	}
 
-	existing = append(existing, event)
+	// Prune events older than EventTTL before appending to bound file growth.
+	cutoff := time.Now().UTC().Add(-s.EventTTL)
+	pruned := existing[:0]
+	for _, e := range existing {
+		if e.ReceivedAt.After(cutoff) {
+			pruned = append(pruned, e)
+		}
+	}
+	existing = append(pruned, event)
 
 	data, err := json.Marshal(existing)
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"github.com/openpubkey/openpubkey/pktoken"
 	"github.com/openpubkey/openpubkey/verifier"
@@ -175,7 +176,8 @@ func (v *VerifyCmd) ReadFromServerConfig() error {
 
 	// Wire up CAE if configured and enabled.
 	if serverConfig.CAE != nil && serverConfig.CAE.Enabled {
-		store := caep.NewFileStore(serverConfig.CAE.EventStorePath)
+		eventTTL := time.Duration(serverConfig.CAE.EventTTLDays) * 24 * time.Hour
+		store := caep.NewFileStore(serverConfig.CAE.EventStorePath, eventTTL)
 
 		var streams []caep.PollerConfig
 		for _, s := range serverConfig.CAE.Streams {
